@@ -4,6 +4,9 @@ use clap::{Parser, Subcommand};
 #[command(name = "airctl")]
 #[command(version, about = "Control remote workloads from Air")]
 struct Cli {
+    #[arg(short = 'H', long, default_value = "pro", global = true)]
+    host: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -27,14 +30,16 @@ fn main() {
 
     match cli.command {
         Commands::Status => {
-            println!("pro: unknown");
+            println!("{}: unknown", cli.host);
         }
 
         Commands::Run { command } => {
+            println!("host: {}", cli.host);
             println!("run: {}", command.join(" "));
         }
 
         Commands::Logs { job_id } => {
+            println!("host: {}", cli.host);
             println!("logs: {job_id}");
         }
     }
