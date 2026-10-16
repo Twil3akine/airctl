@@ -1,10 +1,7 @@
+mod remote;
+
 use clap::{Parser, Subcommand};
-use core::error;
-use std::{
-    io::Write,
-    process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
 #[command(name = "airctl")]
@@ -91,49 +88,18 @@ fn main() {
                     shell_quote(&job_id),
                 );
 
-                let mut child = match Command::new("ssh")
-                    .args(["-o", "BatchMode=yes"])
-                    .arg(&cli.host)
-                    .args(["sh", "-s"])
-                    .stdin(Stdio::piped())
-                    .spawn()
-                {
-                    Ok(child) => child,
-                    Err(err) => {
-                        eprintln!("failed to execute ssh: {err}");
-                        std::process::exit(1);
-                    }
-                };
-
-                if let Some(mut stdin) = child.stdin.take() {
-                    if let Err(err) = stdin.write_all(script.as_bytes()) {
-                        eprintln!("failed to send status script: {err}");
-                        std::process::exit(1);
-                    }
-                }
-
-                match child.wait() {
+                match remote::run_script(&cli.host, &script) {
                     Ok(status) if status.success() => {}
                     Ok(status) => {
                         std::process::exit(status.code().unwrap_or(1));
                     }
                     Err(err) => {
-                        eprintln!("failed to wait for ssh: {err}");
+                        eprintln!("failed to execute remote script: {err}");
                         std::process::exit(1);
                     }
                 }
             } else {
-                let status = Command::new("ssh")
-                    .args([
-                        "-o",
-                        "BatchMode=yes",
-                        "-o",
-                        "ConnectTimeout=3",
-                        &cli.host,
-                        "true",
-                    ])
-                    .status();
-
+                let status = remote::check_host(&cli.host);
                 match status {
                     Ok(status) if status.success() => {
                         println!("{}: online", cli.host);
@@ -182,28 +148,7 @@ fn main() {
                 args,
             );
 
-            let mut child = match Command::new("ssh")
-                .args(["-o", "BatchMode=yes"])
-                .arg(&cli.host)
-                .args(["sh", "-s"])
-                .stdin(Stdio::piped())
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(err) => {
-                    eprintln!("failed to execute ssh: {err}");
-                    std::process::exit(1);
-                }
-            };
-
-            if let Some(mut stdin) = child.stdin.take() {
-                if let Err(err) = stdin.write_all(script.as_bytes()) {
-                    eprintln!("failed to send job script: {err}");
-                    std::process::exit(1);
-                }
-            }
-
-            match child.wait() {
+            match remote::run_script(&cli.host, &script) {
                 Ok(status) if status.success() => {
                     println!("job {job_id} started on {}", cli.host);
                 }
@@ -212,7 +157,7 @@ fn main() {
                     std::process::exit(1);
                 }
                 Err(err) => {
-                    eprintln!("failed to wait for ssh: {err}");
+                    eprintln!("failed to execute remote script: {err}");
                     std::process::exit(1);
                 }
             }
@@ -241,34 +186,13 @@ fn main() {
                 shell_quote(&job_id),
             );
 
-            let mut child = match Command::new("ssh")
-                .args(["-o", "BatchMode=yes"])
-                .arg(&cli.host)
-                .args(["sh", "-s"])
-                .stdin(Stdio::piped())
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(err) => {
-                    eprintln!("faield to execute ssh: {err}");
-                    std::process::exit(1);
-                }
-            };
-
-            if let Some(mut stdin) = child.stdin.take() {
-                if let Err(err) = stdin.write_all(script.as_bytes()) {
-                    eprintln!("failed to send log script: {err}");
-                    std::process::exit(1);
-                }
-            }
-
-            match child.wait() {
+            match remote::run_script(&cli.host, &script) {
                 Ok(status) if status.success() => {}
                 Ok(status) => {
                     std::process::exit(status.code().unwrap_or(1));
                 }
                 Err(err) => {
-                    eprintln!("failed to wait for ssh: {err}");
+                    eprintln!("failed to execute remote script: {err}");
                     std::process::exit(1);
                 }
             }
