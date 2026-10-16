@@ -30,6 +30,10 @@ enum Commands {
     },
 
     Jobs,
+
+    Cancel {
+        job_id: String,
+    },
 }
 
 fn new_job_id() -> String {
@@ -60,6 +64,16 @@ fn main() {
                         exit 0
                     fi
 
+                    if [ -f "$job_dir/cancelled" ]; then
+                        if [ -f "$job_dir/exit-code" ]; then
+                            printf 'cancelled\n'
+                        else
+                            printf 'cancelling\n'
+                        fi
+
+                        exit 0
+                    fi
+
                     if [ -f "$job_dir/exit-code" ]; then
                         code=$(cat "$job_dir/exit-code")
 
@@ -70,7 +84,6 @@ fn main() {
                         fi
 
                         exit 0
-
                     fi
 
                     if [ -f "$job_dir/pid" ]; then
@@ -129,23 +142,37 @@ fn main() {
             let script = format!(
                 r#"set -eu
 
-                job_id={}
-                job_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/airctl/jobs/$job_id"
+job_id={}
+job_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/airctl/jobs/$job_id"
 
-                mkdir -p "$job_dir"
+mkdir -p "$job_dir"
 
-                nohup sh -c '
-                job_dir=$1
-                shift
+cat > "$job_dir/runner.sh" <<'AIRCTL_RUNNER'
+job_dir=$1
+shift
 
-                "$@" >"$job_dir/stdout" 2>"$job_dir/stderr"
-                code=$?
+"$@" >"$job_dir/stdout" 2>"$job_dir/stderr" &
+child=$!
 
-                printf "%s\n" "$code" >"$job_dir/exit-code"
-                ' sh "$job_dir" {} </dev/null >/dev/null 2>&1 &
+printf '%s\n' "$child" >"$job_dir/child-pid"
 
-                printf "%s\n" "$!" >"$job_dir/pid"
-                "#,
+terminate() {{
+    kill "$child" 2>/dev/null || true
+}}
+
+trap terminate TERM INT HUP
+
+wait "$child"
+code=$?
+
+printf '%s\n' "$code" >"$job_dir/exit-code"
+exit "$code"
+AIRCTL_RUNNER
+
+nohup sh "$job_dir/runner.sh" "$job_dir" {} </dev/null > /dev/null 2>&1 &
+
+printf '%s\n' "$!" >"$job_dir/pid"
+"#,
                 shell_quote(&job_id),
                 args,
             );
@@ -213,7 +240,14 @@ fn main() {
 
                 job_id=$(basename "$job_dir")
 
-                if [ -f "$job_dir/exit-code" ]; then
+
+                if [ -f "$job_dir/cancelled" ]; then
+                    if [ -f "$job_dir/exit-code" ]; then
+                        status="cancelled"
+                    else
+                        status="cancelling"
+                    fi
+                elif [ -f "$job_dir/exit-code" ]; then
                     code=$(cat "$job_dir/exit-code")
 
                     if [ "$code" -eq 0 ]; then
@@ -244,6 +278,59 @@ fn main() {
                 }
                 Err(err) => {
                     eprintln!("failed to list remote jobs: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Cancel { job_id } => {
+            let script = format!(
+                r#"job_id={}
+                    job_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/airctl/jobs/$job_id"
+
+                    if [ ! -d "$job_dir" ]; then
+                        printf 'job not found: %s\n' "$job_id" >&2
+                        exit 1
+                    fi
+
+                    if [ -f "$job_dir/exit-code" ]; then
+                        printf 'job %s already finished\n' "$job_id"
+                        exit 0
+                    fi
+
+                    if [ ! -f "$job_dir/runner.sh" ]; then
+                        printf 'job %s was created by an older airctl and cannot be cancelled safely\n' "$job_id" >&2
+                        exit 1
+                    fi
+
+                    if [ ! -f "$job_dir/pid" ]; then
+                        printf 'job %s has no pid\n' "$job_id" >&2
+                        exit 1
+                    fi
+
+                    pid=$(cat "$job_dir/pid")
+
+                    if ! kill -0 "$pid" 2>/dev/null; then
+                        printf 'job %s is not running\n' "$job_id"
+                        exit 0
+                    fi
+
+                    : > "$job_dir/cancelled"
+                    kill "$pid"
+
+                    printf 'job %s cancellation requested\n' "$job_id"
+                "#,
+                shell_quote(&job_id),
+            );
+
+            match remote::run_script(&cli.host, &script) {
+                Ok(status) if status.success() => {}
+                Ok(status) => {
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+
+                Err(err) => {
+                    eprintln!("failed to cancel remote job: {err}");
                     std::process::exit(1);
                 }
             }
