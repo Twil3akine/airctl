@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "airctl")]
@@ -30,7 +31,30 @@ fn main() {
 
     match cli.command {
         Commands::Status => {
-            println!("{}: unknown", cli.host);
+            let status = Command::new("ssh")
+                .args([
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=3",
+                    &cli.host,
+                    "true",
+                ])
+                .status();
+
+            match status {
+                Ok(status) if status.success() => {
+                    println!("{}: online", cli.host);
+                }
+                Ok(_) => {
+                    println!("{}: unreachable", cli.host);
+                }
+
+                Err(err) => {
+                    eprintln!("failed to execute ssh: {err}");
+                    std::process::exit(1);
+                }
+            }
         }
 
         Commands::Run { command } => {
