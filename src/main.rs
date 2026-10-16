@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use core::error;
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -18,7 +19,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Status,
+    Status {
+        job_id: Option<String>,
+    },
 
     Run {
         #[arg(required = true, trailing_var_arg = true)]
@@ -47,29 +50,101 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Status => {
-            let status = Command::new("ssh")
-                .args([
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=3",
-                    &cli.host,
-                    "true",
-                ])
-                .status();
+        Commands::Status { job_id } => {
+            if let Some(job_id) = job_id {
+                let script = format!(
+                    r#"job_id={}
+                    job_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/airctl/jobs/$job_id"
 
-            match status {
-                Ok(status) if status.success() => {
-                    println!("{}: online", cli.host);
-                }
-                Ok(_) => {
-                    println!("{}: unreachable", cli.host);
+                    if [ ! -d "$job_dir" ]; then
+                        printf 'not-found\n'
+                        exit 0
+                    fi
+
+                    if [ -f "$job_dir/exit-code" ]; then
+                        code=$(cat "$job_dir/exit-code")
+
+                        if [ "$code" -eq 0 ]; then
+                            printf 'completed\n'
+                        else
+                            printf 'failed (%s)\n' "$code"
+                        fi
+
+                        exit 0
+
+                    fi
+
+                    if [ -f "$job_dir/pid" ]; then
+                        pid=$(cat "$job_dir/pid")
+
+                        if kill -0 "$pid" 2>/dev/null; then
+                            printf 'running\n'
+                        else
+                            printf 'unknown\n'
+                        fi
+
+                        exit 0
+                    fi
+
+                    printf 'unknown\n'
+                    "#,
+                    shell_quote(&job_id),
+                );
+
+                let mut child = match Command::new("ssh")
+                    .args(["-o", "BatchMode=yes"])
+                    .arg(&cli.host)
+                    .args(["sh", "-s"])
+                    .stdin(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(err) => {
+                        eprintln!("failed to execute ssh: {err}");
+                        std::process::exit(1);
+                    }
+                };
+
+                if let Some(mut stdin) = child.stdin.take() {
+                    if let Err(err) = stdin.write_all(script.as_bytes()) {
+                        eprintln!("failed to send status script: {err}");
+                        std::process::exit(1);
+                    }
                 }
 
-                Err(err) => {
-                    eprintln!("failed to execute ssh: {err}");
-                    std::process::exit(1);
+                match child.wait() {
+                    Ok(status) if status.success() => {}
+                    Ok(status) => {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                    Err(err) => {
+                        eprintln!("failed to wait for ssh: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                let status = Command::new("ssh")
+                    .args([
+                        "-o",
+                        "BatchMode=yes",
+                        "-o",
+                        "ConnectTimeout=3",
+                        &cli.host,
+                        "true",
+                    ])
+                    .status();
+
+                match status {
+                    Ok(status) if status.success() => {
+                        println!("{}: online", cli.host);
+                    }
+                    Ok(_) => {
+                        println!("{}: unreachable", cli.host);
+                    }
+                    Err(err) => {
+                        eprintln!("failed to execute ssh: {err}");
+                        std::process::exit(1);
+                    }
                 }
             }
         }
