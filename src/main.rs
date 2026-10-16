@@ -16,24 +16,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Status {
-        job_id: Option<String>,
-    },
+    /// Check host connectivity or job status
+    Status { job_id: Option<String> },
 
+    /// Run a command on the remote host
     Run {
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
 
-    Logs {
-        job_id: String,
-    },
+    /// Show stdout and stderr for a job
+    Logs { job_id: String },
 
+    /// List remote jobs
     Jobs,
 
-    Cancel {
-        job_id: String,
-    },
+    /// Cancel a running job
+    Cancel { job_id: String },
 }
 
 fn new_job_id() -> String {
