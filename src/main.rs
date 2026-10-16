@@ -28,6 +28,8 @@ enum Commands {
     Logs {
         job_id: String,
     },
+
+    Jobs,
 }
 
 fn new_job_id() -> String {
@@ -193,6 +195,55 @@ fn main() {
                 }
                 Err(err) => {
                     eprintln!("failed to execute remote script: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Jobs => {
+            let script = r#"
+            base="${XDG_STATE_HOME:-$HOME/.local/state}/airctl/jobs"
+
+            if [ ! -d "$base" ]; then
+                exit 0
+            fi
+
+            for job_dir in "$base"/*; do
+                [ -d "$job_dir" ] || continue
+
+                job_id=$(basename "$job_dir")
+
+                if [ -f "$job_dir/exit-code" ]; then
+                    code=$(cat "$job_dir/exit-code")
+
+                    if [ "$code" -eq 0 ]; then
+                        status="completed"
+                    else
+                        status="failed ($code)"
+                    fi
+                elif [ -f "$job_dir/pid" ]; then
+                    pid=$(cat "$job_dir/pid")
+
+                    if kill -0 "$pid" 2>/dev/null; then
+                        status="running"
+                    else
+                        status="unknown"
+                    fi
+                else
+                    status="unknown"
+                fi
+
+                printf '%s\t%s\n' "$job_id" "$status"
+            done
+            "#;
+
+            match remote::run_script(&cli.host, script) {
+                Ok(status) if status.success() => {}
+                Ok(status) => {
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+                Err(err) => {
+                    eprintln!("failed to list remote jobs: {err}");
                     std::process::exit(1);
                 }
             }
