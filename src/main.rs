@@ -58,8 +58,26 @@ fn main() {
         }
 
         Commands::Run { command } => {
-            println!("host: {}", cli.host);
-            println!("run: {}", command.join(" "));
+            let status = Command::new("ssh")
+                .arg(&cli.host)
+                .arg("--")
+                .args(&command)
+                .status();
+
+            match status {
+                Ok(status) => {
+                    if let Some(code) = status.code() {
+                        std::process::exit(code);
+                    } else {
+                        eprintln!("remote command terminated by signal");
+                        std::process::exit(1);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("failed to execute ssh: {err}");
+                    std::process::exit(1);
+                }
+            }
         }
 
         Commands::Logs { job_id } => {
