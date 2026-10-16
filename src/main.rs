@@ -2,7 +2,6 @@ use clap::{Parser, Subcommand};
 use std::{
     io::Write,
     process::{Command, Stdio},
-    ptr::null,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -87,23 +86,23 @@ fn main() {
             let script = format!(
                 r#"set -eu
 
-            job_id={}
-            job_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/airctl/jobs/$job_id"
+                job_id={}
+                job_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/airctl/jobs/$job_id"
 
-            mkdir -p "$job_dir"
+                mkdir -p "$job_dir"
 
-            nohup sh -c '
-            job_dir=$1
-            shift
+                nohup sh -c '
+                job_dir=$1
+                shift
 
-            "$@" >"$job_dir/stdout" 2>"$job_dir/stderr"
-            code=$?
+                "$@" >"$job_dir/stdout" 2>"$job_dir/stderr"
+                code=$?
 
-            printf "%s\n" "$code" >"$job_dir/exit-code"
-            ' sh "$job_dir" {} </dev/null >/dev/null 2>&1 &
+                printf "%s\n" "$code" >"$job_dir/exit-code"
+                ' sh "$job_dir" {} </dev/null >/dev/null 2>&1 &
 
-            printf "%s\n" "$!" >"$job_dir/pid"
-            "#,
+                printf "%s\n" "$!" >"$job_dir/pid"
+                "#,
                 shell_quote(&job_id),
                 args,
             );
@@ -145,8 +144,59 @@ fn main() {
         }
 
         Commands::Logs { job_id } => {
-            println!("host: {}", cli.host);
-            println!("logs: {job_id}");
+            let script = format!(
+                r#"job_id={}
+
+                job_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/airctl/jobs/$job_id"
+
+                if [ ! -d "$job_dir" ]; then
+                    printf 'job not found: %s\n' "$job_id" >&2
+                    exit 1
+                fi
+
+                if [ -f  "$job_dir/stdout" ]; then
+                    cat "$job_dir/stdout"
+                fi
+
+                if [ -s "$job_dir/stderr" ]; then
+                    printf '\n--- stderr ---\n' >&2
+                    cat "$job_dir/stderr" >&2
+                fi
+                "#,
+                shell_quote(&job_id),
+            );
+
+            let mut child = match Command::new("ssh")
+                .args(["-o", "BatchMode=yes"])
+                .arg(&cli.host)
+                .args(["sh", "-s"])
+                .stdin(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(err) => {
+                    eprintln!("faield to execute ssh: {err}");
+                    std::process::exit(1);
+                }
+            };
+
+            if let Some(mut stdin) = child.stdin.take() {
+                if let Err(err) = stdin.write_all(script.as_bytes()) {
+                    eprintln!("failed to send log script: {err}");
+                    std::process::exit(1);
+                }
+            }
+
+            match child.wait() {
+                Ok(status) if status.success() => {}
+                Ok(status) => {
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+                Err(err) => {
+                    eprintln!("failed to wait for ssh: {err}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
